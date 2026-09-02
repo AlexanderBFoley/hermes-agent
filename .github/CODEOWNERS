@@ -1,0 +1,4 @@
+# Guarded paths require Alex's review even when everything else auto-merges.
+/.github/          @AlexanderBFoley
+/AGENTS.md         @AlexanderBFoley
+/CLAUDE.md         @AlexanderBFoley

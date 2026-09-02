@@ -1,0 +1,44 @@
+name: auto-merge
+
+# Privileged workflow. Human review required for any change to this file.
+# Enables GitHub's native auto-merge (squash) on:
+#   1. Dependabot PRs that are patch/minor updates
+#   2. Any PR carrying the `auto-merge` label
+# The branch ruleset still enforces: PR required + `ci` check green. This file
+# never merges anything itself; it only flips the auto-merge flag and lets
+# GitHub merge once the ruleset is satisfied.
+#
+# Requires repo setting: Actions > General > Workflow permissions >
+#   "Allow GitHub Actions to create and approve pull requests" = ON.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      contains(github.event.pull_request.labels.*.name, 'auto-merge')
+    steps:
+      - name: Dependabot metadata
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: >
+          github.event.pull_request.user.login != 'dependabot[bot]' ||
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr merge --auto --squash "$PR" --repo "$GITHUB_REPOSITORY"

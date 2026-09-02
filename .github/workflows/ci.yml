@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Job id MUST stay "ci" — it is the required status check in the branch ruleset.
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect stack
+        id: stack
+        run: |
+          echo "node=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "python=$([ -f pyproject.toml ] || [ -f requirements.txt ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "pnpm=$([ -f pnpm-lock.yaml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # ---------- Node ----------
+      - if: steps.stack.outputs.pnpm == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.stack.outputs.node == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: ${{ steps.stack.outputs.pnpm == 'true' && 'pnpm' || 'npm' }}
+      - if: steps.stack.outputs.node == 'true'
+        name: Install (node)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile
+          elif [ -f package-lock.json ]; then npm ci
+          else npm install; fi
+      - if: steps.stack.outputs.node == 'true'
+        name: Lint / build / test (node — each only if the script exists)
+        run: |
+          has() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
+          has lint  && npm run lint
+          has build && npm run build
+          has test  && npm test
+          true
+
+      # ---------- Python ----------
+      - if: steps.stack.outputs.python == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.stack.outputs.python == 'true'
+        name: Install / lint / test (python)
+        run: |
+          python -m pip install -U pip
+          [ -f requirements.txt ] && pip install -r requirements.txt
+          [ -f pyproject.toml ] && pip install -e . || true
+          pip install ruff pytest
+          ruff check . || true
+          if ls tests test_*.py >/dev/null 2>&1; then pytest -q; fi
+
+      - name: No stack detected
+        if: steps.stack.outputs.node != 'true' && steps.stack.outputs.python != 'true'
+        run: echo "No package.json / pyproject / requirements found — nothing to build. Passing."
