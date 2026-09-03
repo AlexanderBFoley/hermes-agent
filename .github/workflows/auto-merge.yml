@@ -13,11 +13,12 @@ name: auto-merge
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled]
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   enable:
@@ -42,3 +43,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: gh pr merge --auto --squash "$PR" --repo "$GITHUB_REPOSITORY"
+
+  # Arms GitHub-native auto-merge on every non-draft PR the moment it opens.
+  # GitHub then merges it itself once the ruleset (PR + `ci` green) is satisfied —
+  # no polling, no webhook, nothing running on Alex's PC. PRs touching guarded
+  # paths (workflows, CODEOWNERS, AGENTS.md, CLAUDE.md, .env*, secrets/, data/)
+  # get a `needs-review` label instead, unless dependabot authored them.
+  arm-on-open:
+    runs-on: ubuntu-latest
+    if: >
+      contains(fromJSON('["opened","reopened","ready_for_review"]'), github.event.action) &&
+      github.event.pull_request.draft == false
+    steps:
+      - name: Arm native auto-merge or label needs-review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          GUARDED='(^|/)(\.github/workflows/|\.github/CODEOWNERS$|AGENTS\.md$|CLAUDE\.md$|\.env|secrets/|data/)'
+          if [ "$AUTHOR" != "dependabot[bot]" ]; then
+            HITS=$(gh pr diff "$PR" --repo "$REPO" --name-only | grep -E "$GUARDED" || true)
+            if [ -n "$HITS" ]; then
+              echo "PR #$PR touches guarded paths — labeling needs-review instead of arming:"
+              echo "$HITS"
+              gh label create needs-review --repo "$REPO" --color d93f0b \
+                --description "touches a guarded path, needs a human or the gatekeeper sweep" --force
+              gh pr edit "$PR" --repo "$REPO" --add-label needs-review
+              exit 0
+            fi
+          fi
+          gh pr merge "$PR" --repo "$REPO" --auto --squash \
+            || echo "PR #$PR: auto-merge not armed (already merged/armed, or not in a mergeable state yet) — not a failure"
