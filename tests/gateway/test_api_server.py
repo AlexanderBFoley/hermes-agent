@@ -973,6 +973,40 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_calls_real_scanner_signature(self, adapter):
+        """autospec pins the handler's call to find_all_skills' real signature.
+
+        A plain ``return_value=`` mock accepts any kwarg, which is how a stale
+        ``include_editorial=True`` (left by the Collective Wisdom revert) shipped
+        and turned every GET /v1/skills into a 500."""
+        with patch("tools.skills_tool.find_all_skills", autospec=True, return_value=[]):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 200, await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_skills_real_scan_skips_malformed_skill(self, adapter, tmp_path):
+        """Unmocked end-to-end: a real skills dir with one good and one malformed
+        SKILL.md lists the good skill with 200 instead of failing the whole list."""
+        skills_dir = tmp_path / "skills"
+        good = skills_dir / "demo" / "good-skill"
+        good.mkdir(parents=True)
+        (good / "SKILL.md").write_text(
+            "---\nname: good-skill\ndescription: A valid skill\n---\n\n# Good\n", encoding="utf-8")
+        bad = skills_dir / "demo" / "broken-skill"
+        bad.mkdir(parents=True)
+        (bad / "SKILL.md").write_bytes(b"---\nname: [unclosed\n\xff\xfe: :\n---\n")
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 200, await resp.text()
+                data = await resp.json()
+        names = [s["name"] for s in data["data"]]
+        assert "good-skill" in names
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio
